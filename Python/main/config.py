@@ -31,6 +31,8 @@ PADRAO = {
         "raio_max": 20,
         "param1": 100,
         "param2": 30,
+        # Meia largura da regiao de busca em volta da posicao prevista (pixels da imagem)
+        "roi_margem": 90,
     },
     # Transformacao para coordenadas da mesa. Os cantos sao pontos da imagem,
     # na ordem: superior esquerdo, superior direito, inferior direito, inferior esquerdo.

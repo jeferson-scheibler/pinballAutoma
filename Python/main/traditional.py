@@ -52,8 +52,26 @@ class traditional:
         dx, dy, dw, dh = self.cfg["lancador"]["ajuste"]
         return x + dx, y + dy, w + dw, h + dh
 
-    def detectCircle(self, image):
-        """Detecta a bolinha. Retorna (x, y, r) como int, ou (0, 0, 0) se nada for encontrado."""
+    def detectCircle(self, image, centro=None):
+        """Detecta a bolinha. Retorna (x, y, r) como int, ou (0, 0, 0) se nada for encontrado.
+
+        centro: posicao prevista (x, y) na imagem. Quando informado, procura primeiro
+        numa regiao de interesse em volta dele (bem mais rapido) e so varre a imagem
+        inteira se nao encontrar nada ali.
+        """
+        if centro is not None:
+            margem = int(self.cfg["bolinha"]["roi_margem"])
+            altura, largura = image.shape[:2]
+            cx, cy = int(centro[0]), int(centro[1])
+            x0, y0 = max(0, cx - margem), max(0, cy - margem)
+            x1, y1 = min(largura, cx + margem), min(altura, cy + margem)
+            if x1 - x0 > 2 * self.cfg["bolinha"]["raio_max"] and y1 - y0 > 2 * self.cfg["bolinha"]["raio_max"]:
+                x, y, r = self._hough(image[y0:y1, x0:x1])
+                if r > 0:
+                    return x + x0, y + y0, r
+        return self._hough(image)
+
+    def _hough(self, image):
         b = self.cfg["bolinha"]
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         gray_blurred = cv2.blur(gray, (3, 3))

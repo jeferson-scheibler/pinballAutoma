@@ -11,7 +11,7 @@ kernel = numpy.ones((5 ,5), numpy.uint8)
 captura = cv2.VideoCapture(0)
 captura.set(cv2.CAP_PROP_FPS, 30)
 
-arduino = serial.Serial('/dev/ttyACM0', 9600)
+arduino = serial.Serial('/dev/ttyACM0', 115200)
 
 posX = []
 posY = []

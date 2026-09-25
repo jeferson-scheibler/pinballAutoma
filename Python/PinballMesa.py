@@ -10,7 +10,7 @@ kernel = numpy.ones((5 ,5), numpy.uint8)
 
 captura = cv2.VideoCapture(1)
 
-arduino = serial.Serial('COM5', 9600)
+arduino = serial.Serial('COM5', 115200)
 
 posX = []
 posY = []

@@ -1,3 +1,16 @@
+// Protocolo serial (115200 baud, linhas terminadas em '
+')
+//
+// PC -> Arduino (1 caractere):
+//   '1' pulso no braco esquerdo    '2' pulso no braco direito    '3' pulso no lancador
+//       (os tres so sao aceitos no modo automatico)
+//   '?' pede o status              'r' zera o placar
+//
+// Arduino -> PC:
+//   S,<modo>,<total>,<g0>,<g1>,<g2>,<g3>   status (no inicio, apos '?', 'r' e troca de modo)
+//   H,<sensor>,<total>                    sensor de impacto atingido
+//   modo: 0 = automatico, 1 = manual; g0..g3 = nivel de cor de cada grupo de leds (0-4)
+
 //Matriz que relaciona o numero do led(1..8) com os pinos R, G, B conectados ao arduino
 int leds[8][3] = {
   {32, 53, 30},
@@ -39,6 +52,11 @@ const unsigned long MAX_ACIONADO_MS = 1500;  // tempo maximo com o solenoide ene
 const unsigned long DEBOUNCE_MS = 30;        // filtro dos sensores de impacto
 const unsigned long TROCA_MODO_MS = 1000;    // tempo segurando os dois botoes para trocar de modo
 
+const long BAUD = 115200;
+
+// Pontuacao total (numero de impactos nos sensores)
+unsigned long pontosTotal = 0;
+
 // Solenoides (rele ativo em LOW)
 struct Solenoide {
   int pino;
@@ -79,7 +97,7 @@ unsigned long animProximo = 0;
 
 void setup()
 {
-  Serial.begin(9600);
+  Serial.begin(BAUD);
 
   desligaSolenoide(esq);
   desligaSolenoide(dir);
@@ -111,6 +129,7 @@ void setup()
   randomSeed(analogRead(A0));
   reset();
   iniciaAnimacao(true);
+  enviaStatus();
 }
 
 // Nenhuma rotina do loop usa delay(): comandos seriais e botoes sao
@@ -140,9 +159,14 @@ void reset() {
   desligaSolenoide(esq);
   desligaSolenoide(dir);
   desligaSolenoide(launch);
+  zeraPlacar();
+}
+
+void zeraPlacar() {
   for (int i = 0; i < 4; i++) {
     controlaEstados[i] = 0;
   }
+  pontosTotal = 0;
 }
 
 // ---------------------------------------------------------------- Solenoides
@@ -198,6 +222,18 @@ void controlaPorBotao(Solenoide &s, int pinoBtn, unsigned long agora) {
 void leSerial() {
   while (Serial.available() > 0) {
     char leitura = Serial.read();
+    if (leitura == '?') {
+      enviaStatus();
+      continue;
+    }
+    if (leitura == 'r') {
+      zeraPlacar();
+      if (animAtual == ANIM_NENHUMA) {
+        apagaLeds();
+      }
+      enviaStatus();
+      continue;
+    }
     if (gameMode != MODO_AUTOMATICO) {
       continue;
     }
@@ -234,7 +270,21 @@ void leBtnMode(unsigned long agora) {
     trocaModoArmada = false;
     inicioTrocaModo = 0;
     iniciaAnimacao(false);
+    enviaStatus();
   }
+}
+
+void enviaStatus() {
+  Serial.print(F("S,"));
+  Serial.print(gameMode);
+  Serial.print(',');
+  Serial.print(pontosTotal);
+  for (int i = 0; i < 4; i++) {
+    Serial.print(',');
+    Serial.print(controlaEstados[i]);
+  }
+  Serial.print('
+');
 }
 
 // ---------------------------------------------------------------- Sensores / pontuacao
@@ -269,6 +319,14 @@ void btnHit(int btn) {
   }
   // Cicla as cores: 1 -> 2 -> 3 -> 4 (branco) -> 1 ...
   controlaEstados[grupo] = (controlaEstados[grupo] % PONTUACAO_MAX) + 1;
+  pontosTotal++;
+
+  Serial.print(F("H,"));
+  Serial.print(btn);
+  Serial.print(',');
+  Serial.print(pontosTotal);
+  Serial.print('
+');
   if (animAtual == ANIM_NENHUMA) {
     atualizaLeds();
   }

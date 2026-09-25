@@ -5,7 +5,7 @@ A ideia é desenvolver duas mesas de pinball que podem jogar sozinhas, ou de for
 A automação da mesa será feita através de uma câmera apontada em direção a mesa que será responsavel por "enxergar" a bolinha e algumas marcações da mesa para localizar onde a bolinha se encontra, a area na qual os batedores atuam e a area de lançamento da bolinha. </br>
 Para seu funcionamento autonomo se tem 2 formas de funcionamento:
 - Algoritmo ("Math"): detecta a bolinha com HoughCircles (OpenCV) e a base dos batedores por uma marcação colorida na mesa (vermelha por padrão, faixa HSV calibrável).
-- IA ("Ai"): detecta a bolinha com um modelo YOLOv5 treinado (`Python/YoloModel/best256pV9`, classes `bola` e `batedor`).
+- IA ("Ai"): detecta a bolinha com um modelo YOLOv5 treinado (`Python/YoloModel/best256pV9.onnx`, classes `bola` e `batedor`), executado pelo OpenCV (sem PyTorch).
 
 Em ambos os modos a bolinha é rastreada (filtro de Kalman) e, se a trajetória prevista chegar à área de um batedor dentro do tempo de reação do sistema, o PC envia o comando para o Arduino.
 
@@ -60,19 +60,30 @@ A bolinha é rastreada com um filtro de Kalman (posição e velocidade, usando o
 
 Opções principais do `main.py`:
 - `--config`: arquivo de configuração (padrão `Python/main/config.json`)
-- `--porta` / `--baud`: porta serial do Arduino (ex.: `COM3`, `/dev/ttyACM0`)
+- `--porta` / `--baud`: porta serial do Arduino (ex.: `COM3`, `/dev/ttyACM0`; padrão 115200 baud)
 - `--camera`: índice da câmera
-- `--modo math|ai`: modo inicial (tecla `t` alterna durante a execução, `Esc` sai)
+- `--modo math|ai`: modo inicial (tecla `t` alterna durante a execução, `r` zera o placar, `Esc` sai)
 - `--lancador`: habilita o lançamento automático quando a bolinha está parada na área do lançador
-- `--yolov5-local`: clone local do yolov5 para rodar o modo IA sem internet (por padrão o `torch.hub` baixa o repositório na primeira execução)
+- `--backend opencv|onnxruntime|torch`: execução do modelo no modo IA. O padrão `opencv` não precisa de PyTorch nem de internet; `onnxruntime` requer `pip install onnxruntime`; `torch` usa o `torch.hub` (para modelos `.pt`)
+- `--yolov5-local`: clone local do yolov5 para o backend `torch` sem internet
 - `--sem-serial`: roda apenas a visão, sem Arduino
 
-Protocolo serial (9600 baud), aceito somente no modo automático do Arduino:
+#### Placar e comunicação com o Arduino
+A tela mostra o modo do Arduino (automático/manual), o placar (total de impactos nos sensores) e o último sensor atingido. O PC pede o status a cada 1 s; se o Arduino não responder por 3 s, aparece **SEM RESPOSTA** em vermelho. No modo manual do Arduino o PC não envia comandos dos batedores.
 
-| Comando | Ação |
+Para duas mesas, rode uma instância por mesa, cada uma com sua câmera, porta e configuração (`--camera`, `--porta`, `--config`).
+
+Protocolo serial (115200 baud):
+
+| PC → Arduino | Ação |
 |---|---|
-| `1` | pulso no braço esquerdo |
-| `2` | pulso no braço direito |
-| `3` | pulso no lançador |
+| `1` / `2` / `3` | pulso no braço esquerdo / direito / lançador (somente no modo automático) |
+| `?` | pede o status |
+| `r` | zera o placar |
+
+| Arduino → PC | Significado |
+|---|---|
+| `S,<modo>,<total>,<g0>,<g1>,<g2>,<g3>` | status: modo (0 automático, 1 manual), placar total e nível de cor de cada grupo de LEDs; enviado no início, após `?`, `r` e troca de modo |
+| `H,<sensor>,<total>` | sensor de impacto atingido e placar atualizado |
 
 No Arduino, segurar os botões esquerdo e direito por 1 s alterna entre modo automático e manual. Por segurança, os solenoides acionados pelos botões desligam após 1,5 s mesmo com o botão pressionado (`MAX_ACIONADO_MS`).

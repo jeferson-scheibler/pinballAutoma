@@ -3,33 +3,31 @@ import time
 
 import cv2
 import numpy
-import serial
 
 import config
+from arduino import Arduino, CMD_DIREITO, CMD_ESQUERDO, CMD_LANCAR, MODO_MANUAL
 from camera import abrirCamera, lerQuadro
 from mesa import mesa
 from perspectiva import Perspectiva
 from rastreador import Rastreador
 from traditional import traditional
 
-# Comandos aceitos pelo Arduino
-CMD_ESQUERDO = b'1'
-CMD_DIREITO = b'2'
-CMD_LANCAR = b'3'
-
 TECLA_ESC = 27
 TECLA_T = ord('t')
+TECLA_R = ord('r')
 
 
 def parseArgs():
     p = argparse.ArgumentParser(description="Mesa de pinball autonoma")
     p.add_argument("--config", default=config.CAMINHO_PADRAO, help="arquivo de configuracao (gerado por calibracao.py)")
     p.add_argument("--porta", default="COM3", help="porta serial do Arduino (ex.: COM3, /dev/ttyACM0)")
-    p.add_argument("--baud", type=int, default=9600)
+    p.add_argument("--baud", type=int, default=115200)
     p.add_argument("--camera", type=int, default=0, help="indice da camera")
     p.add_argument("--modo", choices=["math", "ai"], default="math", help="modo inicial de deteccao")
     p.add_argument("--modelo", default=None, help="caminho do modelo YOLO (.onnx/.pt)")
-    p.add_argument("--yolov5-local", default=None, help="clone local do yolov5 (uso offline)")
+    p.add_argument("--backend", choices=["opencv", "onnxruntime", "torch"], default="opencv",
+                   help="execucao do modelo no modo IA (padrao: opencv, sem PyTorch)")
+    p.add_argument("--yolov5-local", default=None, help="clone local do yolov5 (backend torch offline)")
     p.add_argument("--lancador", action="store_true",
                    help="habilita o lancamento automatico (requer a marcacao do lancador)")
     p.add_argument("--sem-serial", action="store_true", help="executa sem Arduino (apenas visualizacao)")
@@ -44,21 +42,6 @@ class Fps:
         dt = agora - self.anterior
         self.anterior = agora
         return str(int(1 / dt)) if dt > 0 else "0"
-
-
-def abrirSerial(args):
-    if args.sem_serial:
-        return None
-    arduino = serial.Serial(args.porta, args.baud, timeout=0)
-    # O Arduino reinicia ao abrir a porta; aguarda o bootloader antes de enviar comandos
-    time.sleep(2)
-    arduino.reset_input_buffer()
-    return arduino
-
-
-def enviar(arduino, comando):
-    if arduino is not None:
-        arduino.write(comando)
 
 
 def retanguloMesa(persp, x, y, w, h):
@@ -76,6 +59,21 @@ def desenharPoligono(image, persp, cantosMesa, cor):
 def pontoImagem(persp, x, y):
     px, py = persp.paraImagem([(x, y)])[0]
     return int(px), int(py)
+
+
+def desenharPlacar(image, arduino, agora):
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    largura = image.shape[1]
+    status = arduino.textoStatus(agora)
+    corStatus = (0, 0, 255) if arduino.ativo and not arduino.conectado(agora) else (100, 255, 0)
+    cv2.putText(image, status, (largura - 260, 30), font, 0.6, corStatus, 2, cv2.LINE_AA)
+    if not arduino.ativo:
+        return
+    cv2.putText(image, "Placar: %d" % arduino.total, (largura - 260, 65), font, 0.9, (0, 255, 255), 2, cv2.LINE_AA)
+    # Destaque rapido quando um sensor e atingido
+    if arduino.ultimoImpacto and agora - arduino.ultimoImpacto[1] < 0.5:
+        cv2.putText(image, "Sensor %d!" % arduino.ultimoImpacto[0], (largura - 260, 95),
+                    font, 0.6, (0, 165, 255), 2, cv2.LINE_AA)
 
 
 def desenhar(image, persp, m, rast, modo, fpsTxt):
@@ -107,7 +105,7 @@ def main():
     cfgCam = cfg["camera"]
 
     captura = abrirCamera(args.camera, cfgCam)
-    arduino = abrirSerial(args)
+    arduino = Arduino(None if args.sem_serial else args.porta, args.baud)
     persp = Perspectiva(cfg["perspectiva"])
     m = mesa(cfg)
     rast = Rastreador(cfg["previsao"])
@@ -118,7 +116,8 @@ def main():
 
     def carregarDeep():
         from deepLearning import deepLearning, MODELO_PADRAO
-        return deepLearning(args.modelo or MODELO_PADRAO, repo_local=args.yolov5_local)
+        return deepLearning(args.modelo or MODELO_PADRAO, backend=args.backend,
+                            repo_local=args.yolov5_local)
 
     if modo == 1:
         deep = carregarDeep()
@@ -143,23 +142,27 @@ def main():
                     m.setposLancador(*retanguloMesa(persp, *lanc))
 
             if modo == 0:
-                x, y, r = trad.detectCircle(image)
+                # Procura primeiro em volta da posicao prevista para este quadro
+                centro = None
+                if rast.valido:
+                    centro = persp.paraImagem([rast.preverEm(agora - rast.t)])[0]
+                x, y, r = trad.detectCircle(image, centro)
             else:
-                imageRGB = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                imageRGB = cv2.resize(imageRGB, (deep.tamanho, deep.tamanho))
-                x, y, r = deep.inference(imageRGB)
-                x = x * cfgCam["largura"] / deep.tamanho
-                y = y * cfgCam["altura"] / deep.tamanho
+                x, y, r = deep.inference(image)
 
             rast.atualizar(persp.pontoMesa(x, y) if r > 0 else None, agora)
 
-            hit, lado = m.isHit(rast, agora)
-            if hit:
-                enviar(arduino, CMD_DIREITO if lado == mesa.DIREITO else CMD_ESQUERDO)
-            elif m.isLaunch(rast, agora):
-                enviar(arduino, CMD_LANCAR)
+            arduino.atualizar(agora)
+            # No modo manual do Arduino os comandos seriam ignorados; nao gasta o cooldown
+            if arduino.modo != MODO_MANUAL:
+                hit, lado = m.isHit(rast, agora)
+                if hit:
+                    arduino.enviar(CMD_DIREITO if lado == mesa.DIREITO else CMD_ESQUERDO)
+                elif m.isLaunch(rast, agora):
+                    arduino.enviar(CMD_LANCAR)
 
             desenhar(image, persp, m, rast, modo, fpsTxt)
+            desenharPlacar(image, arduino, agora)
             cv2.imshow("Video", image)
 
             k = cv2.waitKey(1) & 0xff
@@ -168,13 +171,14 @@ def main():
                     deep = carregarDeep()
                 modo = 1 - modo
                 rast.reiniciar()
+            elif k == TECLA_R:
+                arduino.zerarPlacar()
             elif k == TECLA_ESC:
                 break
     finally:
         captura.release()
         cv2.destroyAllWindows()
-        if arduino is not None:
-            arduino.close()
+        arduino.fechar()
 
 
 if __name__ == "__main__":
