@@ -267,9 +267,8 @@ void btnHit(int btn) {
   } else {
     grupo = 3;
   }
-  if (controlaEstados[grupo] < PONTUACAO_MAX) {
-    controlaEstados[grupo]++;
-  }
+  // Cicla as cores: 1 -> 2 -> 3 -> 4 (branco) -> 1 ...
+  controlaEstados[grupo] = (controlaEstados[grupo] % PONTUACAO_MAX) + 1;
   if (animAtual == ANIM_NENHUMA) {
     atualizaLeds();
   }
