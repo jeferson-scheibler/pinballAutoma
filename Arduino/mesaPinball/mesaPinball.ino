@@ -1,4 +1,4 @@
-//Matriz que relaciona o numero do led(0,1,2,3,4) com o pino conectado ao arduino
+//Matriz que relaciona o numero do led(1..8) com os pinos R, G, B conectados ao arduino
 int leds[8][3] = {
   {32, 53, 30},
   {34, 40, 48},
@@ -18,43 +18,75 @@ int wave[4][2] = {
   {1, 8}
 };
 
-//Pinos dos botoes que estão ligados ao arduino
+//Pinos dos botoes de fim de curso (sensores de impacto)
 int btns[] = {29, 23, 25, 24, 26, 22, 28, 27};
+const int N_SENSORES = 8;
 
 //Separa os botões em grupos sendo a posição 1 representado pelo led 1 e a posição 2 pelos leds 2,3 e 4
 int controlaEstados[] = {0, 0, 0, 0};
+const int PONTUACAO_MAX = 4;
 
 //Botoes de comando
-int commandBtns[] = {3,2,4}; //3 = direito, 4 = lauch, 2 = esquerdo
+int commandBtns[] = {3, 2, 4}; //3 = direito, 2 = esquerdo, 4 = launch
 
+const int MODO_AUTOMATICO = 0;
+const int MODO_MANUAL = 1;
+int gameMode = MODO_AUTOMATICO;
 
+// Tempos (ms)
+const unsigned long PULSO_MS = 200;          // pulso do solenoide no modo automatico
+const unsigned long MAX_ACIONADO_MS = 1500;  // tempo maximo com o solenoide energizado pelo botao
+const unsigned long DEBOUNCE_MS = 30;        // filtro dos sensores de impacto
+const unsigned long TROCA_MODO_MS = 1000;    // tempo segurando os dois botoes para trocar de modo
 
-//Só controla se é a primeiro loop do arduino.
-boolean isFirstLoop = true;
+// Solenoides (rele ativo em LOW)
+struct Solenoide {
+  int pino;
+  bool ativo;
+  bool porBotao;        // acionado pelo botao (desliga ao soltar) ou por pulso
+  bool bloqueado;       // atingiu o tempo maximo; so rearma ao soltar o botao
+  unsigned long inicio;
+  unsigned long duracao;
+};
 
-int gameMode = 0; //0 = Automatico, 1 = Manual
+Solenoide esq = {7, false, false, false, 0, 0};    // braço esquerdo
+Solenoide dir = {6, false, false, false, 0, 0};    // braço direito
+Solenoide launch = {5, false, false, false, 0, 0}; // lancador
 
-unsigned long Time;
-unsigned long TimeOld;
+// Prototipos explicitos: o gerador automatico da IDE pode declara-los antes do struct
+void ligaSolenoide(Solenoide &s, unsigned long duracao, bool porBotao);
+void desligaSolenoide(Solenoide &s);
+void atualizaSolenoide(Solenoide &s, unsigned long agora);
+void pulsoSolenoide(Solenoide &s);
+void controlaPorBotao(Solenoide &s, int pinoBtn, unsigned long agora);
 
+// Debounce dos sensores
+int sensorLeitura[N_SENSORES];
+int sensorEstavel[N_SENSORES];
+unsigned long sensorMudanca[N_SENSORES];
 
-int esq = 7; // Porta braço esquerdo
-int dir = 6; // Porta braço direito
-int launch = 5; //Porta do lancador
+// Troca de modo
+unsigned long inicioTrocaModo = 0;
+bool trocaModoArmada = true;
+
+// Animacoes (nao bloqueantes)
+enum Animacao { ANIM_NENHUMA, ANIM_ONDA, ANIM_PISCA };
+Animacao animAtual = ANIM_NENHUMA;
+int animQuadro = 0;
+bool animPiscaDepois = false;
+unsigned long animProximo = 0;
 
 
 void setup()
 {
-  TimeOld = 0;
-  Time = millis();
   Serial.begin(9600);
-  pinMode(esq, OUTPUT);
-  pinMode(dir, OUTPUT);
-  pinMode(launch, OUTPUT);
-  digitalWrite(esq, HIGH);
-  digitalWrite(dir, HIGH);
-  digitalWrite(launch, HIGH);
 
+  desligaSolenoide(esq);
+  desligaSolenoide(dir);
+  desligaSolenoide(launch);
+  pinMode(esq.pino, OUTPUT);
+  pinMode(dir.pino, OUTPUT);
+  pinMode(launch.pino, OUTPUT);
 
   // Definindo todos pinos como output
   for (int i = 0; i < 8; i++) {
@@ -62,308 +94,275 @@ void setup()
       pinMode(leds[i][j], OUTPUT);
     }
   }
-  for (int i = 1; i < 7; i++) {
-    for (int j = 0; j < 3; j++) {
-      digitalWrite(leds[i][j], HIGH);
-    }
-  }
+  apagaLeds();
 
   // Definindo botões como pullup
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < N_SENSORES; i++) {
     pinMode(btns[i], INPUT_PULLUP);
+    sensorLeitura[i] = HIGH;
+    sensorEstavel[i] = HIGH;
+    sensorMudanca[i] = 0;
   }
 
   for (int i = 0; i < 3; i++) {
     pinMode(commandBtns[i], INPUT_PULLUP);
   }
 
+  randomSeed(analogRead(A0));
+  reset();
+  iniciaAnimacao(true);
 }
 
-// Este código é chamado automáticamente pelo Arduino, ficará em
-// loop até que seu Arduino seja desligado
+// Nenhuma rotina do loop usa delay(): comandos seriais e botoes sao
+// atendidos a cada iteracao, mesmo durante animacoes e pulsos.
 void loop()
 {
-  char leitura = Serial.read();
-  Time = millis();
+  unsigned long agora = millis();
 
-  leBtnMode();
+  leBtnMode(agora);
+  leSerial();
 
-  if (isFirstLoop) {
-    reset();
-    animStart();
-    for (int i = 0; i < 20; i++) {
-      animStart2();
-    }
+  if (gameMode == MODO_MANUAL) {
+    controlaPorBotao(dir, commandBtns[0], agora);
+    controlaPorBotao(esq, commandBtns[1], agora);
   }
+  controlaPorBotao(launch, commandBtns[2], agora);
 
-  if (gameMode == 0) {
-    if (leitura == '1') {
-      digitalWrite(esq, LOW);
-      delay(200);
-      digitalWrite(esq, HIGH);
-    }
-    else if (leitura == '2') {
-      digitalWrite(dir, LOW);
-      delay(200);
-      digitalWrite(dir, HIGH);
-    }
-    else if(leitura == '3') {
-      digitalWrite(launch, LOW);
-      delay(200);
-      digitalWrite(launch, HIGH);
-    }
-    lePin();
-    lancaBolinha();
-  }else{
-    lancaBolinha();
-    leBtnManualMode();
-    lePin();
-  }
+  atualizaSolenoide(esq, agora);
+  atualizaSolenoide(dir, agora);
+  atualizaSolenoide(launch, agora);
 
-
-  isFirstLoop = false;
+  lePin(agora);
+  atualizaAnimacao(agora);
 }
 
-void reset(){
-  digitalWrite(esq, HIGH);
-  digitalWrite(dir, HIGH);
-  digitalWrite(launch, HIGH);
-  controlaEstados[0] = 0;
-  controlaEstados[1] = 0;
-  controlaEstados[2] = 0;
-  controlaEstados[3] = 0;
-}
-
-void leBtnManualMode(){
-  if (digitalRead(commandBtns[0]) == LOW){
-    digitalWrite(dir, LOW);
-  }else{
-    digitalWrite(dir, HIGH);
-  }
-  
-  if (digitalRead(commandBtns[1]) == LOW){
-    digitalWrite(esq, LOW);
-  }else{
-    digitalWrite(esq, HIGH);
+void reset() {
+  desligaSolenoide(esq);
+  desligaSolenoide(dir);
+  desligaSolenoide(launch);
+  for (int i = 0; i < 4; i++) {
+    controlaEstados[i] = 0;
   }
 }
 
-void lancaBolinha(){
-  if (digitalRead(commandBtns[2]) == LOW){
-    digitalWrite(launch, LOW);
-  }else{
-    digitalWrite(launch, HIGH);
+// ---------------------------------------------------------------- Solenoides
+
+void ligaSolenoide(Solenoide &s, unsigned long duracao, bool porBotao) {
+  s.ativo = true;
+  s.porBotao = porBotao;
+  s.inicio = millis();
+  s.duracao = duracao;
+  digitalWrite(s.pino, LOW);
+}
+
+void desligaSolenoide(Solenoide &s) {
+  s.ativo = false;
+  s.porBotao = false;
+  digitalWrite(s.pino, HIGH);
+}
+
+// Desliga o solenoide ao fim do pulso ou ao atingir o tempo maximo acionado
+void atualizaSolenoide(Solenoide &s, unsigned long agora) {
+  if (s.ativo && agora - s.inicio >= s.duracao) {
+    if (s.porBotao) {
+      s.bloqueado = true;
+    }
+    desligaSolenoide(s);
   }
 }
 
+// Pulso vindo do PC. Ignorado se o solenoide ja estiver acionado.
+void pulsoSolenoide(Solenoide &s) {
+  if (!s.ativo) {
+    ligaSolenoide(s, PULSO_MS, false);
+  }
+}
 
-
-void leBtnMode() {
-  if (digitalRead(commandBtns[0]) == LOW && digitalRead(commandBtns[1]) == LOW) {
-    
-    if (TimeOld == 0) {
-      TimeOld = Time;
-    } else {
-      if (Time - TimeOld > 1000) {
-        if (gameMode == 0) {
-          gameMode = 1;
-        } else {
-          gameMode = 0;
-        }
-        controlaEstados[0] = 0;
-        controlaEstados[1] = 0;
-        controlaEstados[2] = 0;
-        controlaEstados[3] = 0;
-        animStart();
-        TimeOld = 0;
-      }
+// Mantem o solenoide acionado enquanto o botao estiver pressionado,
+// limitado a MAX_ACIONADO_MS para nao superaquecer a bobina.
+void controlaPorBotao(Solenoide &s, int pinoBtn, unsigned long agora) {
+  if (digitalRead(pinoBtn) == LOW) {
+    if (!s.ativo && !s.bloqueado) {
+      ligaSolenoide(s, MAX_ACIONADO_MS, true);
     }
   } else {
-    TimeOld = 0;
+    s.bloqueado = false;
+    if (s.ativo && s.porBotao) {
+      desligaSolenoide(s);
+    }
   }
 }
 
-void lePin() {
-  for (int i = 0; i < 8; i++) {
-    if (digitalRead(btns[i]) == LOW) {
-      btnHit(i);
-    } else {
+// ---------------------------------------------------------------- Comandos
+
+void leSerial() {
+  while (Serial.available() > 0) {
+    char leitura = Serial.read();
+    if (gameMode != MODO_AUTOMATICO) {
+      continue;
+    }
+    if (leitura == '1') {
+      pulsoSolenoide(esq);
+    } else if (leitura == '2') {
+      pulsoSolenoide(dir);
+    } else if (leitura == '3') {
+      pulsoSolenoide(launch);
+    }
+  }
+}
+
+// Segurar direito + esquerdo por TROCA_MODO_MS alterna entre automatico e manual.
+// E preciso soltar os botoes antes de uma nova troca.
+void leBtnMode(unsigned long agora) {
+  bool ambos = digitalRead(commandBtns[0]) == LOW && digitalRead(commandBtns[1]) == LOW;
+  if (!ambos) {
+    inicioTrocaModo = 0;
+    trocaModoArmada = true;
+    return;
+  }
+  if (!trocaModoArmada) {
+    return;
+  }
+  if (inicioTrocaModo == 0) {
+    inicioTrocaModo = agora;
+  } else if (agora - inicioTrocaModo > TROCA_MODO_MS) {
+    gameMode = (gameMode == MODO_AUTOMATICO) ? MODO_MANUAL : MODO_AUTOMATICO;
+    reset();
+    // Exige soltar os botoes antes de acionar os bracos no novo modo
+    esq.bloqueado = true;
+    dir.bloqueado = true;
+    trocaModoArmada = false;
+    inicioTrocaModo = 0;
+    iniciaAnimacao(false);
+  }
+}
+
+// ---------------------------------------------------------------- Sensores / pontuacao
+
+// Conta um ponto apenas na borda de descida (sensor pressionado), com debounce
+void lePin(unsigned long agora) {
+  for (int i = 0; i < N_SENSORES; i++) {
+    int leitura = digitalRead(btns[i]);
+    if (leitura != sensorLeitura[i]) {
+      sensorLeitura[i] = leitura;
+      sensorMudanca[i] = agora;
+    }
+    if (agora - sensorMudanca[i] >= DEBOUNCE_MS && leitura != sensorEstavel[i]) {
+      sensorEstavel[i] = leitura;
+      if (leitura == LOW) {
+        btnHit(i);
+      }
     }
   }
 }
 
 void btnHit(int btn) {
+  int grupo;
   if (btn == 0) {
-    controlaEstados[0] = controlaEstados[0] + 1;
+    grupo = 0;
+  } else if (btn <= 3) {
+    grupo = 1;
+  } else if (btn <= 6) {
+    grupo = 2;
+  } else {
+    grupo = 3;
   }
-  if (btn >= 1 && btn <= 3) {
-    controlaEstados[1] = controlaEstados[1] + 1;
+  if (controlaEstados[grupo] < PONTUACAO_MAX) {
+    controlaEstados[grupo]++;
   }
-  if (btn >= 4 && btn <= 6) {
-    controlaEstados[2] = controlaEstados[2] + 1;
+  if (animAtual == ANIM_NENHUMA) {
+    atualizaLeds();
   }
-  if (btn == 7) {
-    controlaEstados[3] = controlaEstados[3] + 1;
+}
+
+// Cor de cada nivel de pontuacao: 1 = vermelho, 2 = verde, 3 = azul, 4 = branco
+void corGrupo(int estado, int primeiroLed, int ultimoLed) {
+  if (estado < 1 || estado > PONTUACAO_MAX) {
+    return;
   }
-  atualizaLeds();
+  bool r = (estado == 1 || estado == 4);
+  bool g = (estado == 2 || estado == 4);
+  bool b = (estado == 3 || estado == 4);
+  for (int n = primeiroLed; n <= ultimoLed; n++) {
+    led(n, r, g, b);
+  }
 }
 
 void atualizaLeds() {
-  if (controlaEstados[0] == 1) {
-    led(1, true, false, false);
-  }
-  if (controlaEstados[0] == 2) {
-    led(1, false, true, false);
-  }
-  if (controlaEstados[0] == 3) {
-    led(1, false, false, true);
-  }
-  if (controlaEstados[0] == 4) {
-    led(1, true, true, true);
-  }
-
-  if (controlaEstados[1] == 1) {
-    led(2, true, false, false);
-    led(3, true, false, false);
-    led(4, true, false, false);
-  }
-  if (controlaEstados[1] == 2) {
-    led(2, false, true, false);
-    led(3, false, true, false);
-    led(4, false, true, false);
-  }
-  if (controlaEstados[1] == 3) {
-    led(2, false, false, true);
-    led(3, false, false, true);
-    led(4, false, false, true);
-  }
-  if (controlaEstados[1] == 4) {
-    led(2, true, true, true);
-    led(3, true, true, true);
-    led(4, true, true, true);
-  }
-
-  if (controlaEstados[2] == 1) {
-    led(5, true, false, false);
-    led(6, true, false, false);
-    led(7, true, false, false);
-  }
-  if (controlaEstados[2] == 2) {
-    led(5, false, true, false);
-    led(6, false, true, false);
-    led(7, false, true, false);
-  }
-  if (controlaEstados[2] == 3) {
-    led(5, false, false, true);
-    led(6, false, false, true);
-    led(7, false, false, true);
-  }
-  if (controlaEstados[2] == 4) {
-    led(5, true, true, true);
-    led(6, true, true, true);
-    led(7, true, true, true);
-  }
-
-  if (controlaEstados[3] == 1) {
-    led(8, true, false, false);
-  }
-  if (controlaEstados[3] == 2) {
-    led(8, false, true, false);
-  }
-  if (controlaEstados[3] == 3) {
-    led(8, false, false, true);
-  }
-  if (controlaEstados[3] == 4) {
-    led(8, true, true, true);
-  }
-
-  delay(300);
+  corGrupo(controlaEstados[0], 1, 1);
+  corGrupo(controlaEstados[1], 2, 4);
+  corGrupo(controlaEstados[2], 5, 7);
+  corGrupo(controlaEstados[3], 8, 8);
 }
 
-void animStart() {
+// ---------------------------------------------------------------- LEDs / animacoes
 
-  for (int i = 0; i < 5; i++) {
-    leBtnManualMode();
-    int v1 = random(100);
-    int v2 = random(100);
-    int v3 = random(100);
-    boolean b1, b2, b3 = false;
-    if (v1 > 50) {
-      b1 = true;
-    } else {
-      b1 = false;
-    }
-    if (v2 > 50) {
-      b2 = true;
-    } else {
-      b2 = false;
-    }
-    if (v3 > 50) {
-      b3 = true;
-    } else {
-      b3 = false;
-    }
-
-
-    for (int i = 0; i < 4; i++) {
-      for (int j = 0; j < 2; j++) {
-        int ledNum = wave[i][j];
-        led(ledNum, true, false, false);
-      }
-      delay(60);
-    }
-
-
-    for (int i = 0; i < 4; i++) {
-      for (int j = 0; j < 2; j++) {
-        int ledNum = wave[i][j];
-        led(ledNum, false, false, false);
-      }
-      delay(60);
-    }
-  }
-}
-
-void animStart2() {
-
-
-  for (int i = 1; i < 9; i++) {
-    leBtnManualMode();
-    int v1 = random(100);
-    int v2 = random(100);
-    int v3 = random(100);
-    boolean b1, b2, b3 = false;
-    if (v1 > 50) {
-      b1 = true;
-    } else {
-      b1 = false;
-    }
-    if (v2 > 50) {
-      b2 = true;
-    } else {
-      b2 = false;
-    }
-    if (v3 > 50) {
-      b3 = true;
-    } else {
-      b3 = false;
-    }
-
-    led(i, b1, b2, b3);
-
-  }
-  delay(50);
-
-  for (int i = 1; i < 9; i++) {
+void apagaLeds() {
+  for (int i = 1; i <= 8; i++) {
     led(i, false, false, false);
   }
-
-  delay(50);
 }
 
+// Onda (5 ciclos de 8 quadros de 60 ms), opcionalmente seguida de pisca aleatorio
+// (20 ciclos de 2 quadros de 50 ms)
+void iniciaAnimacao(bool comPisca) {
+  animAtual = ANIM_ONDA;
+  animQuadro = 0;
+  animPiscaDepois = comPisca;
+  animProximo = millis();
+  apagaLeds();
+}
 
+void finalizaAnimacao() {
+  animAtual = ANIM_NENHUMA;
+  apagaLeds();
+  atualizaLeds();
+}
+
+void atualizaAnimacao(unsigned long agora) {
+  if (animAtual == ANIM_NENHUMA || (long)(agora - animProximo) < 0) {
+    return;
+  }
+
+  if (animAtual == ANIM_ONDA) {
+    int passo = animQuadro % 8;
+    bool acende = passo < 4;
+    int par = passo % 4;
+    for (int j = 0; j < 2; j++) {
+      led(wave[par][j], acende, false, false);
+    }
+    animProximo = agora + 60;
+    animQuadro++;
+    if (animQuadro >= 5 * 8) {
+      if (animPiscaDepois) {
+        animAtual = ANIM_PISCA;
+        animQuadro = 0;
+      } else {
+        finalizaAnimacao();
+      }
+    }
+  } else {
+    if (animQuadro % 2 == 0) {
+      for (int i = 1; i <= 8; i++) {
+        led(i, random(100) > 50, random(100) > 50, random(100) > 50);
+      }
+    } else {
+      apagaLeds();
+    }
+    animProximo = agora + 50;
+    animQuadro++;
+    if (animQuadro >= 20 * 2) {
+      finalizaAnimacao();
+    }
+  }
+}
+
+// nLed de 1 a 8. Os leds 2 a 7 sao de anodo comum (logica invertida).
 void led(int nLed, boolean red, boolean green, boolean blue) {
   nLed = nLed - 1;
+  if (nLed < 0 || nLed > 7) {
+    return;
+  }
   if (nLed >= 1 && nLed <= 6) {
     digitalWrite(leds[nLed][0], !red);
     digitalWrite(leds[nLed][1], !green);

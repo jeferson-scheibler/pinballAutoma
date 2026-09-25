@@ -2,7 +2,6 @@ import cv2
 import time 
 import numpy
 import serial
-from numba import jit
 
 prev_frame_time = 0
 new_frame_time = 0
@@ -63,7 +62,6 @@ def drawRoute(image):
         cv2.rectangle(image,(xL,yL), (xL+2,yL+2), (0,255,0), 3)
         x +=1
 
-@jit(parallel = True, fastmath = True)
 def detectCircle(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) 
     gray_blurred = cv2.blur(gray, (3, 3)) 
@@ -74,7 +72,7 @@ def detectCircle(image):
         detected_circles = numpy.uint16(numpy.around(detected_circles)) 
       
         for pt in detected_circles[0, :]: 
-            a, b, r = pt[0], pt[1], pt[2] 
+            a, b, r = int(pt[0]), int(pt[1]), int(pt[2])  # int nativo: evita overflow de uint16 no NumPy 2.x
             cv2.circle(image, (a, b), r, (0, 255, 0), 2) 
             cv2.circle(image, (a, b), 1, (0, 0, 255), 3)
             return a,b,r 

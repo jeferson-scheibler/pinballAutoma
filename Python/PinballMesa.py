@@ -81,7 +81,7 @@ def detectCircle(image):
         detected_circles = numpy.uint16(numpy.around(detected_circles)) 
       
         for pt in detected_circles[0, :]: 
-            a, b, r = pt[0], pt[1], pt[2] 
+            a, b, r = int(pt[0]), int(pt[1]), int(pt[2])  # int nativo: evita overflow de uint16 no NumPy 2.x
             cv2.circle(image, (a, b), r, (0, 255, 0), 2) 
             cv2.circle(image, (a, b), 1, (0, 0, 255), 3)
             return a,b,r 
