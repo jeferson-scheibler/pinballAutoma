@@ -1,5 +1,4 @@
-// Protocolo serial (115200 baud, linhas terminadas em '
-')
+// Protocolo serial (115200 baud, linhas terminadas em '\n')
 //
 // PC -> Arduino (1 caractere):
 //   '1' pulso no braco esquerdo    '2' pulso no braco direito    '3' pulso no lancador
@@ -283,8 +282,7 @@ void enviaStatus() {
     Serial.print(',');
     Serial.print(controlaEstados[i]);
   }
-  Serial.print('
-');
+  Serial.print('\n');
 }
 
 // ---------------------------------------------------------------- Sensores / pontuacao
@@ -325,8 +323,7 @@ void btnHit(int btn) {
   Serial.print(btn);
   Serial.print(',');
   Serial.print(pontosTotal);
-  Serial.print('
-');
+  Serial.print('\n');
   if (animAtual == ANIM_NENHUMA) {
     atualizaLeds();
   }
