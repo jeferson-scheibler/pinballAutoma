@@ -4,10 +4,10 @@ Esse foi um projeto desenvolvido pelo Laboratório de automação (Univates) em 
 A ideia é desenvolver duas mesas de pinball que podem jogar sozinhas, ou de forma manual. As duas mesas serão colocadas frente a frente, tendo o objetivo de lançar a bolinha para o outro lado e ir pontuando conforme a bolinha for batendo nos cantos. </br>
 A automação da mesa será feita através de uma câmera apontada em direção a mesa que será responsavel por "enxergar" a bolinha e algumas marcações da mesa para localizar onde a bolinha se encontra, a area na qual os batedores atuam e a area de lançamento da bolinha. </br>
 Para seu funcionamento autonomo se tem 2 formas de funcionamento:
-- Algoritmo ("Math"): detecta a bolinha com HoughCircles (OpenCV) e a base dos batedores por uma marcação vermelha na mesa.
+- Algoritmo ("Math"): detecta a bolinha com HoughCircles (OpenCV) e a base dos batedores por uma marcação colorida na mesa (vermelha por padrão, faixa HSV calibrável).
 - IA ("Ai"): detecta a bolinha com um modelo YOLOv5 treinado (`Python/YoloModel/best256pV9`, classes `bola` e `batedor`).
 
-Em ambos os modos a próxima posição da bolinha é extrapolada a partir dos últimos quadros; se ela cair na área de um batedor, o PC envia o comando para o Arduino.
+Em ambos os modos a bolinha é rastreada (filtro de Kalman) e, se a trajetória prevista chegar à área de um batedor dentro do tempo de reação do sistema, o PC envia o comando para o Arduino.
 
 ## Execução
 ### Mesa:
@@ -37,14 +37,33 @@ O script principal fica em `Python/main/main.py`:
 
 ```bash
 pip install -r Python/requirements.txt
+python Python/main/calibracao.py --camera 0
 python Python/main/main.py --porta COM3 --camera 0
 ```
 
-Opções principais:
+#### Calibração (`calibracao.py`)
+Todos os parâmetros ficam em `Python/main/config.json`, gerado pela ferramenta de calibração (tecla `s` salva). Modos:
+
+| Tecla | Ajuste |
+|---|---|
+| `1` / `2` | faixa HSV da marcação da base dos batedores / do lançador (janela "Mascara" mostra o resultado) |
+| `3` | detecção da bolinha (raios e parâmetros do HoughCircles) |
+| `4` | tamanho da área dos batedores, latência e cooldown |
+| `5` | exposição e balanço de branco da câmera (fixá-los deixa as cores estáveis) |
+| `p` | marcar os 4 cantos da mesa (sup. esq., sup. dir., inf. dir., inf. esq.) para usar coordenadas da mesa |
+| `c` | ativar/desativar a perspectiva |
+
+Com a perspectiva ativa, as medidas da área dos batedores passam a ser em unidades da mesa (`largura_mesa` x `altura_mesa`, padrão 400 x 800), independentes da posição da câmera; reajuste-as no modo `4`.
+
+#### Previsão e disparo
+A bolinha é rastreada com um filtro de Kalman (posição e velocidade, usando o tempo real entre quadros). O batedor é acionado quando a trajetória prevista entra na área dos batedores dentro da `latencia_ms` (atraso entre o quadro e o braço em movimento), e o lado é definido pelo ponto de entrada. Para ajustar a latência: se o braço bate depois da bolinha passar, aumente; se bate cedo demais, diminua.
+
+Opções principais do `main.py`:
+- `--config`: arquivo de configuração (padrão `Python/main/config.json`)
 - `--porta` / `--baud`: porta serial do Arduino (ex.: `COM3`, `/dev/ttyACM0`)
 - `--camera`: índice da câmera
 - `--modo math|ai`: modo inicial (tecla `t` alterna durante a execução, `Esc` sai)
-- `--lancador`: habilita o lançamento automático (requer a marcação azul do lançador)
+- `--lancador`: habilita o lançamento automático quando a bolinha está parada na área do lançador
 - `--yolov5-local`: clone local do yolov5 para rodar o modo IA sem internet (por padrão o `torch.hub` baixa o repositório na primeira execução)
 - `--sem-serial`: roda apenas a visão, sem Arduino
 
