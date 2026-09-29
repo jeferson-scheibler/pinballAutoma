@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+# Configuracao local do Pi, tokens e chaves
+Python/main/pi.json
+*.env
+*.key

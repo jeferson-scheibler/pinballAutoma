@@ -1,0 +1,21 @@
+# Servico do servidor na VM. Copie para /etc/systemd/system/ e rode:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now pinball-vm
+[Unit]
+Description=Mesas de pinball - servidor (VM)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pinball
+WorkingDirectory=/opt/mesaPinball/Python/main
+# Arquivo com PINBALL_TOKEN_VM, PINBALL_WEB_USUARIO e PINBALL_WEB_SENHA (permissao 600)
+EnvironmentFile=/etc/pinball/vm.env
+ExecStart=/usr/bin/python3 servidor_vm.py --cert /etc/pinball/servidor.crt --chave /etc/pinball/servidor.key --porta-pi 8443 --porta-web 8444
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

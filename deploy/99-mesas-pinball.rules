@@ -1,0 +1,6 @@
+# Nomes fixos para os Arduinos (/dev/mesa1 e /dev/mesa2), independentes da ordem de conexao.
+# Descubra o numero de serie de cada Arduino com:
+#   udevadm info -a -n /dev/ttyACM0 | grep '{serial}' | head -1
+# Copie para /etc/udev/rules.d/ e rode: sudo udevadm control --reload && sudo udevadm trigger
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", ATTRS{serial}=="SERIAL-DO-ARDUINO-DA-MESA-1", SYMLINK+="mesa1", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", ATTRS{serial}=="SERIAL-DO-ARDUINO-DA-MESA-2", SYMLINK+="mesa2", GROUP="dialout", MODE="0660"

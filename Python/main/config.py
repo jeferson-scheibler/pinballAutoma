@@ -19,6 +19,9 @@ PADRAO = {
         "exposicao": -6,
         "balanco_branco_auto": True,
         "temperatura_branco": 4500,
+        # Formato e taxa pedidos a camera. "MJPG" reduz o uso do USB (necessario com 2 cameras no Pi)
+        "fourcc": "MJPG",
+        "fps": 30,
     },
     # Faixas HSV do OpenCV (H: 0-179, S e V: 0-255).
     # Quando h_min > h_max a faixa "da a volta" no vermelho (ex.: 170..10).
@@ -47,6 +50,8 @@ PADRAO = {
         "largura": 200,
         "altura": 100,
         "suavizacao_base": 0.2,
+        # Procura as marcacoes (base e lancador) a cada N quadros; use 5-10 no Raspberry Pi
+        "intervalo_quadros": 1,
     },
     "lancador": {
         "ajuste": [15, 0, 40, 30],

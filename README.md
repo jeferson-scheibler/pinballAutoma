@@ -87,3 +87,48 @@ Protocolo serial (115200 baud):
 | `H,<sensor>,<total>` | sensor de impacto atingido e placar atualizado |
 
 No Arduino, segurar os botões esquerdo e direito por 1 s alterna entre modo automático e manual. Por segurança, os solenoides acionados pelos botões desligam após 1,5 s mesmo com o botão pressionado (`MAX_ACIONADO_MS`).
+
+## Raspberry Pi 4, PC de IA e servidor (VM)
+
+```
+câmeras + Arduinos ─USB─▶ Raspberry Pi 4 ── modo Math local (controla as mesas, sem depender da rede)
+                               │  ▲
+          rede local cabeada   │  │ comandos (só enquanto o PC controla a mesa)
+                               ▼  │
+                          PC de IA (main.py --pi)
+                               │
+     internet (TLS, conexão aberta pelo Pi) ──▶ VM: placar e vídeo na web (servidor_vm.py)
+```
+
+- O **Pi** roda o modo Math das duas mesas. Se a rede cair, as mesas continuam jogando.
+- Um **PC na rede local** pode assumir uma mesa no modo IA. O Pi envia os quadros com o instante da captura e repassa os comandos ao Arduino. Se o PC ficar 1 s sem responder, a mesa volta sozinha ao Math.
+- A **VM** recebe placar, status e vídeo reduzido por uma conexão TLS **aberta pelo Pi** (não é preciso liberar portas no laboratório). A VM só pode zerar o placar; ela nunca aciona os solenoides.
+
+### Raspberry Pi 4
+1. Raspberry Pi OS 64 bits, projeto em `/home/pi/mesaPinball`:
+   ```bash
+   python3 -m venv .venv && .venv/bin/pip install -r Python/requirements.txt
+   ```
+   No Pi, prefira `opencv-python-headless` (sem janelas).
+2. Nomes fixos para os Arduinos: edite os números de série em `deploy/99-mesas-pinball.rules` e copie para `/etc/udev/rules.d/`. As câmeras podem ser indicadas pelo caminho estável em `/dev/v4l/by-id/`.
+3. Copie `Python/main/pi.exemplo.json` para `pi.json` e ajuste câmeras, portas e o IP da VM. A calibração de cada mesa fica em `config_mesa1.json` / `config_mesa2.json` (gerados pelo `calibracao.py --config ...`). No Pi, use `"intervalo_quadros": 5` em `batedores` para economizar CPU.
+4. Tokens em `/etc/pinball/pi.env` (permissão 600): `PINBALL_TOKEN_LAN=...` e `PINBALL_TOKEN_VM=...`. Gere com `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.
+5. Copie o certificado público da VM para `Python/main/vm.crt` e instale o serviço `deploy/pinball-pi.service`.
+
+Ligue as duas câmeras nas portas USB 3 (azuis), use fonte oficial de 5 V / 3 A e, se possível, um hub USB com fonte própria para os Arduinos.
+
+### VM (servidor da universidade)
+Precisa apenas de Python 3.8+ (sem pacotes extras).
+1. Certificado: com domínio, use Let's Encrypt; só com IP, gere um autoassinado e copie o `.crt` para o Pi:
+   ```bash
+   openssl req -x509 -newkey rsa:2048 -nodes -days 825 -keyout servidor.key -out servidor.crt -subj "/CN=IP-DA-VM" -addext "subjectAltName=IP:IP-DA-VM"
+   ```
+2. `/etc/pinball/vm.env` (permissão 600): `PINBALL_TOKEN_VM` (o mesmo do Pi), `PINBALL_WEB_USUARIO` e `PINBALL_WEB_SENHA`.
+3. Instale `deploy/pinball-vm.service` e libere no firewall as portas 8443 (Pi) e 8444 (página web).
+4. Acesse `https://IP-DA-VM:8444` com o usuário e a senha.
+
+### PC de IA (rede local)
+```bash
+python Python/main/main.py --pi IP-DO-PI --mesa 1 --token TOKEN_LAN --modo ai --latencia-ms 110
+```
+A configuração da mesa vem do Pi. A tela mostra a latência medida pelo Pi (captura → comando); some o tempo do relé e do solenoide (~20–30 ms) para ajustar `--latencia-ms`. O token também pode vir da variável `PINBALL_TOKEN_LAN`.

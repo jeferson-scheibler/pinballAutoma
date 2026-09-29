@@ -19,7 +19,7 @@ import numpy
 
 import config
 from camera import abrirCamera, aplicarAjustes, lerQuadro
-from main import desenhar, retanguloMesa
+from desenho import desenhar, retanguloMesa
 from mesa import mesa
 from perspectiva import Perspectiva
 from rastreador import Rastreador

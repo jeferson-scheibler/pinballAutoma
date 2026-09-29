@@ -1,0 +1,20 @@
+# Servico do agente no Raspberry Pi. Copie para /etc/systemd/system/ e rode:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now pinball-pi
+[Unit]
+Description=Mesas de pinball - agente do Raspberry Pi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pi
+Group=pi
+SupplementaryGroups=dialout video
+WorkingDirectory=/home/pi/mesaPinball/Python/main
+# Arquivo com PINBALL_TOKEN_LAN=... e PINBALL_TOKEN_VM=... (permissao 600, fora do git)
+EnvironmentFile=/etc/pinball/pi.env
+ExecStart=/home/pi/mesaPinball/.venv/bin/python pi_agente.py --config pi.json
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -3,6 +3,7 @@
 PC -> Arduino: '1' esquerdo, '2' direito, '3' lancador, '?' status, 'r' zera placar.
 Arduino -> PC: 'S,<modo>,<total>,<g0>,<g1>,<g2>,<g3>' e 'H,<sensor>,<total>'.
 """
+import threading
 import time
 
 CMD_ESQUERDO = b'1'
@@ -47,6 +48,8 @@ class Arduino:
         self.ultimaMensagem = None
         self.ultimoPedido = float("-inf")
         self._buffer = b""
+        # Serial compartilhada entre o ciclo da mesa e a rede (Pi); protege leitura e escrita
+        self._lock = threading.Lock()
         if porta is not None:
             import serial
             self.serial = serial.Serial(porta, baud, timeout=0)
@@ -66,7 +69,8 @@ class Arduino:
 
     def enviar(self, comando):
         if self.serial is not None:
-            self.serial.write(comando)
+            with self._lock:
+                self.serial.write(comando)
 
     def zerarPlacar(self):
         self.enviar(CMD_ZERAR)
@@ -96,9 +100,10 @@ class Arduino:
             self.enviar(CMD_STATUS)
             self.ultimoPedido = agora
 
-        pendente = self.serial.in_waiting
-        if pendente:
-            self._buffer += self.serial.read(pendente)
+        with self._lock:
+            pendente = self.serial.in_waiting
+            if pendente:
+                self._buffer += self.serial.read(pendente)
         mensagens = []
         while b"\n" in self._buffer:
             linha, self._buffer = self._buffer.split(b"\n", 1)

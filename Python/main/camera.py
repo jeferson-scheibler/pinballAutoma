@@ -13,7 +13,11 @@ def _valorExposicaoAuto(auto):
 
 
 def aplicarAjustes(captura, cfgCamera):
-    """Aplica exposicao e balanco de branco. Nem toda camera/driver aceita todos os ajustes."""
+    """Aplica formato, exposicao e balanco de branco. Nem toda camera/driver aceita todos os ajustes."""
+    if cfgCamera.get("fourcc"):
+        captura.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*cfgCamera["fourcc"]))
+    if cfgCamera.get("fps"):
+        captura.set(cv2.CAP_PROP_FPS, cfgCamera["fps"])
     captura.set(cv2.CAP_PROP_AUTO_EXPOSURE, _valorExposicaoAuto(cfgCamera["exposicao_auto"]))
     if not cfgCamera["exposicao_auto"]:
         captura.set(cv2.CAP_PROP_EXPOSURE, cfgCamera["exposicao"])
@@ -22,10 +26,17 @@ def aplicarAjustes(captura, cfgCamera):
         captura.set(cv2.CAP_PROP_WB_TEMPERATURE, cfgCamera["temperatura_branco"])
 
 
-def abrirCamera(indice, cfgCamera):
-    captura = cv2.VideoCapture(indice)
+def abrirCamera(indice, cfgCamera, sairSeFalhar=True):
+    """indice: numero da camera ou caminho do dispositivo (ex.: /dev/v4l/by-id/... no Linux,
+    que nao muda de nome entre reinicios como /dev/video0)."""
+    if sys.platform.startswith("linux"):
+        captura = cv2.VideoCapture(indice, cv2.CAP_V4L2)
+    else:
+        captura = cv2.VideoCapture(indice)
     if not captura.isOpened():
-        raise SystemExit("Nao foi possivel abrir a camera %d" % indice)
+        if sairSeFalhar:
+            raise SystemExit("Nao foi possivel abrir a camera %s" % indice)
+        return None
     aplicarAjustes(captura, cfgCamera)
     return captura
 
