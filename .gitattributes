@@ -1,0 +1,5 @@
+* text=auto
+# Arquivos usados no Linux (Pi e VM) sempre com LF
+deploy/* text eol=lf
+*.py text eol=lf
+*.json text eol=lf
