@@ -7,6 +7,6 @@
   ],
   "lan": {"endereco": "0.0.0.0", "porta": 5800, "token_env": "PINBALL_TOKEN_LAN",
           "jpeg_qualidade": 80, "timeout_s": 1.0},
-  "vm": {"host": "IP-PUBLICO-DA-VM", "porta": 8443, "token_env": "PINBALL_TOKEN_VM",
-         "ca": "vm.crt", "nome_servidor": null, "fps": 10, "largura": 640, "jpeg_qualidade": 70}
+  "vm": {"host": "dati.dev.br", "porta": 8443, "token_env": "PINBALL_TOKEN_VM",
+         "ca": null, "nome_servidor": null, "fps": 10, "largura": 640, "jpeg_qualidade": 70}
 }

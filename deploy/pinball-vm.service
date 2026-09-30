@@ -1,5 +1,9 @@
-# Servico do servidor na VM. Copie para /etc/systemd/system/ e rode:
+# Servico do servidor na VM (atras do nginx). Copie para /etc/systemd/system/ e rode:
 #   sudo systemctl daemon-reload && sudo systemctl enable --now pinball-vm
+#
+# - A pagina web fica em HTTP somente em 127.0.0.1:8444 (o nginx publica em /mesa-pinball/ com TLS).
+# - A porta 8443 recebe o Raspberry Pi por TLS, com o certificado do dominio.
+# - "systemctl reload pinball-vm" recarrega o certificado renovado sem derrubar o Pi.
 [Unit]
 Description=Mesas de pinball - servidor (VM)
 After=network-online.target
@@ -7,15 +11,19 @@ Wants=network-online.target
 
 [Service]
 User=pinball
+Group=pinball
 WorkingDirectory=/opt/mesaPinball/Python/main
-# Arquivo com PINBALL_TOKEN_VM, PINBALL_WEB_USUARIO e PINBALL_WEB_SENHA (permissao 600)
+# Arquivo com PINBALL_TOKEN_VM, PINBALL_WEB_USUARIO e PINBALL_WEB_SENHA (permissao 640, root:pinball)
 EnvironmentFile=/etc/pinball/vm.env
-ExecStart=/usr/bin/python3 servidor_vm.py --cert /etc/pinball/servidor.crt --chave /etc/pinball/servidor.key --porta-pi 8443 --porta-web 8444
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 servidor_vm.py --cert /etc/pinball/tls/fullchain.pem --chave /etc/pinball/tls/privkey.pem --web-http --porta-pi 8443 --porta-web 8444
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=3
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

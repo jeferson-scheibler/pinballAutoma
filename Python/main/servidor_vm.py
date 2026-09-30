@@ -1,7 +1,9 @@
 """Servidor das mesas de pinball para a VM (IP publico). Usa somente a biblioteca padrao.
 
 - Porta do Pi (TLS): recebe o status, o placar e o video reduzido enviados pelo Raspberry Pi.
-- Porta web (HTTPS + senha): pagina com o video e o placar das mesas e o botao de zerar placar.
+- Porta web (senha): pagina com o video e o placar das mesas e o botao de zerar placar.
+  Por padrao usa HTTPS. Com --web-http serve HTTP somente em 127.0.0.1, para ficar atras de um proxy
+  reverso (nginx) que cuida do TLS e publica a pagina em um caminho como /mesa-pinball/.
 
 A VM nao aciona os solenoides: o unico comando que ela repassa ao Pi e zerar o placar.
 
@@ -10,7 +12,9 @@ Variaveis de ambiente:
   PINBALL_WEB_USUARIO  usuario da pagina web
   PINBALL_WEB_SENHA    senha da pagina web
 
-Uso: python servidor_vm.py --cert servidor.crt --chave servidor.key
+Uso direto:        python servidor_vm.py --cert servidor.crt --chave servidor.key
+Atras do nginx:    python servidor_vm.py --cert fullchain.pem --chave privkey.pem --web-http
+O certificado e recarregado ao receber SIGHUP (renovacao do Let's Encrypt sem derrubar o Pi).
 """
 import argparse
 import asyncio
@@ -20,12 +24,48 @@ import json
 import logging
 import os
 import re
+import signal
 import ssl
 import time
 
 import protocolo
 
 log = logging.getLogger("servidor_vm")
+
+MAX_SEM_AUTENTICAR = 10   # conexoes simultaneas da porta do Pi que ainda nao enviaram o token
+
+
+class Limitador:
+    """Bloqueia por um tempo os IPs que erram o token ou a senha varias vezes seguidas."""
+
+    def __init__(self, maximo=8, janela=600.0, bloqueio=600.0):
+        self.maximo, self.janela, self.bloqueio = maximo, janela, bloqueio
+        self.falhas = {}       # ip -> instantes das falhas recentes
+        self.bloqueados = {}   # ip -> ate quando
+
+    def bloqueado(self, ip):
+        ate = self.bloqueados.get(ip)
+        if ate is None:
+            return False
+        if time.monotonic() >= ate:
+            del self.bloqueados[ip]
+            self.falhas.pop(ip, None)
+            return False
+        return True
+
+    def falha(self, ip):
+        agora = time.monotonic()
+        recentes = [t for t in self.falhas.get(ip, []) if agora - t < self.janela]
+        recentes.append(agora)
+        self.falhas[ip] = recentes
+        if len(recentes) >= self.maximo:
+            self.bloqueados[ip] = agora + self.bloqueio
+            log.warning("IP %s bloqueado por %d s apos %d falhas de autenticacao", ip, self.bloqueio, len(recentes))
+        if len(self.falhas) > 10000:   # limite de memoria
+            self.falhas.clear()
+
+    def sucesso(self, ip):
+        self.falhas.pop(ip, None)
 
 
 class Estado:
@@ -34,6 +74,7 @@ class Estado:
         self.piDesde = None
         self.mesas = {}           # id -> {"status", "recebido", "jpeg", "versao"}
         self.novoQuadro = asyncio.Condition()
+        self.semAutenticar = 0
 
     def mesa(self, mid):
         return self.mesas.setdefault(mid, {"status": None, "recebido": None, "jpeg": None, "versao": 0})
@@ -44,31 +85,43 @@ estado = None
 
 # ---------------------------------------------------------------------------- conexao do Pi
 
-async def atenderPi(reader, writer, token):
+async def atenderPi(reader, writer, token, limitador):
     peer = writer.get_extra_info("peername")
+    ip = peer[0] if peer else "?"
+    if limitador.bloqueado(ip) or estado.semAutenticar >= MAX_SEM_AUTENTICAR:
+        writer.close()
+        return
+    estado.semAutenticar += 1
+    contando = True
     try:
         cab, _ = await asyncio.wait_for(protocolo.receberAsync(reader), 10)
         if cab.get("tipo") != "hello" or cab.get("papel") != "pi" or not protocolo.tokenValido(cab.get("token"), token):
-            log.warning("conexao recusada de %s: token invalido", peer)
+            limitador.falha(ip)
+            log.warning("conexao recusada de %s: token invalido", ip)
             writer.write(protocolo.empacotar({"tipo": "erro", "motivo": "acesso negado"}))
             await writer.drain()
             return
+        limitador.sucesso(ip)
+        estado.semAutenticar -= 1
+        contando = False
         if estado.pi is not None:
             log.info("nova conexao do Pi substitui a anterior")
             estado.pi.close()
         estado.pi = writer
         estado.piDesde = time.time()
-        for mid in cab.get("mesas", []):
-            estado.mesa(mid)
+        mesas = cab.get("mesas", [])
+        for mid in (mesas if isinstance(mesas, list) else []):
+            if isinstance(mid, int) and 0 < mid < 100:
+                estado.mesa(mid)
         writer.write(protocolo.empacotar({"tipo": "ok"}))
         await writer.drain()
-        log.info("Pi conectado de %s", peer)
+        log.info("Pi conectado de %s", ip)
         while True:
             cab, dados = await asyncio.wait_for(protocolo.receberAsync(reader), 15)
             mid = cab.get("mesa")
-            if not isinstance(mid, int):
+            if not isinstance(mid, int) or mid not in estado.mesas:
                 continue
-            m = estado.mesa(mid)
+            m = estado.mesas[mid]
             if cab["tipo"] == "status":
                 m["status"] = cab
                 m["recebido"] = time.time()
@@ -79,8 +132,12 @@ async def atenderPi(reader, writer, token):
                     estado.novoQuadro.notify_all()
     except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionError, ssl.SSLError,
             protocolo.ErroProtocolo, ValueError) as e:
-        log.info("conexao do Pi %s encerrada (%s)", peer, type(e).__name__)
+        if contando:
+            limitador.falha(ip)   # conexao que nao chegou a se autenticar
+        log.info("conexao do Pi %s encerrada (%s)", ip, type(e).__name__)
     finally:
+        if contando:
+            estado.semAutenticar -= 1
         if estado.pi is writer:
             estado.pi = None
         writer.close()
@@ -129,7 +186,7 @@ def statusJson():
 async def transmitirVideo(writer, mid):
     fronteira = "quadro"
     writer.write(("HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=%s\r\n"
-                  "Cache-Control: no-store\r\nConnection: close\r\n\r\n" % fronteira).encode("ascii"))
+                  "Cache-Control: no-store\r\nX-Accel-Buffering: no\r\nConnection: close\r\n\r\n" % fronteira).encode("ascii"))
     versao = -1
     while True:
         m = estado.mesas.get(mid)
@@ -146,7 +203,9 @@ async def transmitirVideo(writer, mid):
                 pass
 
 
-async def atenderWeb(reader, writer, usuario, senha):
+async def atenderWeb(reader, writer, usuario, senha, limitador, confiarProxy):
+    peer = writer.get_extra_info("peername")
+    ip = peer[0] if peer else "?"
     try:
         linha = await asyncio.wait_for(reader.readline(), 10)
         partes = linha.decode("latin-1").split()
@@ -161,10 +220,20 @@ async def atenderWeb(reader, writer, usuario, senha):
             k, _, v = h.decode("latin-1").partition(":")
             cabecalhos[k.strip().lower()] = v.strip()
 
+        if confiarProxy:
+            # Atras do nginx o par TCP e sempre 127.0.0.1; o IP real vem em X-Real-IP (definido pelo nginx)
+            ip = (cabecalhos.get("x-real-ip") or ip)[:64]
+        if limitador.bloqueado(ip):
+            writer.write(resposta("429 Too Many Requests", "Muitas tentativas. Tente novamente mais tarde.",
+                                  extra="Retry-After: 600\r\n"))
+            return
         if not autorizado(cabecalhos, usuario, senha):
+            if "authorization" in cabecalhos:   # o primeiro pedido, sem credenciais, nao e falha
+                limitador.falha(ip)
             writer.write(resposta("401 Unauthorized", "Acesso restrito",
                                   extra='WWW-Authenticate: Basic realm="Mesas de pinball", charset="UTF-8"\r\n'))
             return
+        limitador.sucesso(ip)
         caminho = caminho.split("?")[0]
         if metodo == "GET" and caminho == "/":
             writer.write(resposta("200 OK", PAGINA, "text/html; charset=utf-8"))
@@ -214,10 +283,11 @@ button:hover{border-color:var(--mut)}button:focus-visible{outline:2px solid var(
 <header><h1>Mesas de pinball</h1><span id="pi">Conectando…</span></header>
 <main id="mesas"></main>
 <script>
+// Enderecos relativos: a pagina funciona na raiz e tambem em um caminho (ex.: /mesa-pinball/) atras do nginx
 const cont=document.getElementById('mesas'), criadas={};
 function painel(id){
   const s=document.createElement('section');
-  s.innerHTML='<img alt="Vídeo da mesa '+id+'" src="/video/'+id+'">'+
+  s.innerHTML='<img alt="Vídeo da mesa '+id+'" src="video/'+id+'">'+
     '<div class="info"><div><div class="rot">Mesa '+id+'</div><div class="placar" data-k="placar">–</div></div>'+
     '<div><div class="rot">Controle</div><div class="val" data-k="modo">–</div></div>'+
     '<div><div class="rot">Arduino</div><div class="val" data-k="arduino">–</div></div>'+
@@ -225,7 +295,7 @@ function painel(id){
     '<button type="button">Zerar placar</button></div>';
   s.querySelector('button').onclick=async e=>{
     const b=e.target;b.disabled=true;b.textContent='Zerando…';
-    const r=await fetch('/zerar/'+id,{method:'POST',headers:{'X-Pinball':'1'}}).catch(()=>null);
+    const r=await fetch('zerar/'+id,{method:'POST',headers:{'X-Pinball':'1'}}).catch(()=>null);
     b.textContent=r&&r.ok?'Placar zerado':'Pi desconectado';
     setTimeout(()=>{b.disabled=false;b.textContent='Zerar placar'},1500);
   };
@@ -234,7 +304,7 @@ function painel(id){
 function set(s,k,t,c){const el=s.querySelector('[data-k="'+k+'"]');el.textContent=t;el.className=(k==='placar'?'placar ':'val ')+(c||'')}
 async function atualizar(){
   try{
-    const d=await (await fetch('/status.json')).json();
+    const d=await (await fetch('status.json')).json();
     const pi=document.getElementById('pi');
     pi.textContent=d.pi_conectado?'Raspberry Pi conectado':'Raspberry Pi desconectado';
     pi.className=d.pi_conectado?'ok':'erro';
@@ -268,9 +338,31 @@ async def principal(args):
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.load_cert_chain(args.cert, args.chave)
 
-    srvPi = await asyncio.start_server(lambda r, w: atenderPi(r, w, tokenPi), args.endereco, args.porta_pi, ssl=ctx)
-    srvWeb = await asyncio.start_server(lambda r, w: atenderWeb(r, w, usuario, senha), args.endereco, args.porta_web, ssl=ctx)
-    log.info("aguardando o Pi em %s:%d e a pagina web em https://%s:%d", args.endereco, args.porta_pi, args.endereco, args.porta_web)
+    limitador = Limitador()
+    enderecoWeb = args.endereco_web or ("127.0.0.1" if args.web_http else args.endereco)
+    if args.web_http and enderecoWeb not in ("127.0.0.1", "::1", "localhost"):
+        log.warning("a pagina web esta em HTTP sem criptografia em %s; use somente atras de um proxy com TLS", enderecoWeb)
+
+    srvPi = await asyncio.start_server(lambda r, w: atenderPi(r, w, tokenPi, limitador),
+                                       args.endereco, args.porta_pi, ssl=ctx)
+    srvWeb = await asyncio.start_server(lambda r, w: atenderWeb(r, w, usuario, senha, limitador, args.web_http),
+                                        enderecoWeb, args.porta_web, ssl=None if args.web_http else ctx)
+
+    def recarregarCertificado():
+        """SIGHUP: le o certificado renovado; vale para as novas conexoes, sem derrubar o Pi."""
+        try:
+            ctx.load_cert_chain(args.cert, args.chave)
+            log.info("certificado recarregado")
+        except (OSError, ssl.SSLError) as e:
+            log.error("falha ao recarregar o certificado (mantendo o anterior): %s", e)
+
+    try:
+        asyncio.get_running_loop().add_signal_handler(signal.SIGHUP, recarregarCertificado)
+    except (NotImplementedError, AttributeError, ValueError):
+        pass   # Windows
+
+    log.info("aguardando o Pi em %s:%d e a pagina web em %s://%s:%d", args.endereco, args.porta_pi,
+             "http" if args.web_http else "https", enderecoWeb, args.porta_web)
     async with srvPi, srvWeb:
         await asyncio.gather(srvPi.serve_forever(), srvWeb.serve_forever())
 
@@ -282,6 +374,10 @@ def main():
     p.add_argument("--endereco", default="0.0.0.0")
     p.add_argument("--porta-pi", type=int, default=8443)
     p.add_argument("--porta-web", type=int, default=8444)
+    p.add_argument("--web-http", action="store_true",
+                   help="serve a pagina web em HTTP (somente 127.0.0.1) para ficar atras de um proxy reverso com TLS")
+    p.add_argument("--endereco-web", default=None,
+                   help="endereco da pagina web (padrao: 127.0.0.1 com --web-http; senao o mesmo de --endereco)")
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     try:

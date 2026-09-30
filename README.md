@@ -118,6 +118,13 @@ câmeras + Arduinos ─USB─▶ Raspberry Pi 4 ── modo Math local (controla
 Ligue as duas câmeras nas portas USB 3 (azuis), use fonte oficial de 5 V / 3 A e, se possível, um hub USB com fonte própria para os Arduinos.
 
 ### VM (servidor da universidade)
+> **VM com domínio (recomendado):** para publicar a página em `https://SEU-DOMINIO/mesa-pinball/` atrás do nginx,
+> com o Pi conectando em `SEU-DOMINIO:8443` e renovação automática do certificado, siga
+> [docs/CONFIGURAR_VM_DATI.md](docs/CONFIGURAR_VM_DATI.md). Os arquivos estão em `deploy/`
+> (`nginx-mesa-pinball.conf`, `certbot-deploy-hook-pinball.sh`, `pinball-vm.service`). O servidor aceita `--web-http`
+> (página em HTTP só em 127.0.0.1, atrás do proxy) e bloqueia por 10 minutos os IPs que erram o token ou a senha 8 vezes.
+> As instruções abaixo valem para uma VM sem domínio, acessada direto por IP.
+
 Precisa apenas de Python 3.8+ (sem pacotes extras).
 1. Certificado: com domínio, use Let's Encrypt; só com IP, gere um autoassinado e copie o `.crt` para o Pi:
    ```bash
